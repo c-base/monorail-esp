@@ -6,6 +6,7 @@
 #include <TMCStepper.h>
 #include <WiFi.h>
 #include <ESP32Servo.h>
+#include <Bounce2.h>
 
 // Settings
 // #define SLOW_BOOT 0
@@ -25,12 +26,24 @@
 
 TMC2209Stepper driver(&SERIAL_PORT, R_SENSE, DRIVER_ADDRESS);
 
+FastAccelStepperEngine engine = FastAccelStepperEngine();
+FastAccelStepper *stepper = NULL;
+
 #define SERVO_PIN 26
 
 Servo doorServo;
 
-FastAccelStepperEngine engine = FastAccelStepperEngine();
-FastAccelStepper *stepper = NULL;
+// #define
+
+// 1 = orange = led+
+// 2 = c = yellow
+// 3 = nc = green
+// 4 = blue = led-
+
+#define DOOR_LED_PIN 0
+#define DOOR_BUTTON_PIN 4
+
+Bounce2::Button doorButton = Bounce2::Button();
 
 // Function Prototypes
 void connectWifi();
@@ -204,6 +217,8 @@ void generalCallback(Control *sender, int type) {
 	Serial.println(sender->value);
 }
 
+int ledState = LOW;
+
 void setup() {
 	randomSeed(0);
 	Serial.begin(115200);
@@ -216,6 +231,8 @@ void setup() {
 	WiFi.setSleep(false); // For the ESP32: turn off sleeping to increase UI responsivness (at the cost of power use)
 
 	setUpUI();
+
+	// STEPPER
 
 	SERIAL_PORT.begin(115200);
 
@@ -243,6 +260,13 @@ void setup() {
 	stepper->setAutoEnable(true);
 	stepper->enableOutputs();
 
+	// Serial.print("FACTORY_CONF ");
+	// Serial.println(driver.FACTORY_CONF());
+	// Serial.print("PWM_SCALE ");
+	// Serial.println(driver.PWM_SCALE());
+
+	// SERVO
+
 	ESP32PWM::allocateTimer(0);
 	ESP32PWM::allocateTimer(1);
 	ESP32PWM::allocateTimer(2);
@@ -252,13 +276,39 @@ void setup() {
 	// doorServo.attach(SERVO_PIN, 1000, 2000);
 	doorServo.attach(SERVO_PIN);
 
-	// Serial.print("FACTORY_CONF ");
-	// Serial.println(driver.FACTORY_CONF());
-	// Serial.print("PWM_SCALE ");
-	// Serial.println(driver.PWM_SCALE());
+	// BUTTON
+
+	pinMode(DOOR_LED_PIN, OUTPUT);
+	digitalWrite(DOOR_LED_PIN, ledState);
+
+	doorButton.attach(DOOR_BUTTON_PIN, INPUT_PULLUP); // USE EXTERNAL PULL-UP
+
+	// DEBOUNCE INTERVAL IN MILLISECONDS
+	doorButton.interval(5);
+
+	// INDICATE THAT THE HIGH STATE CORRESPONDS TO PHYSICALLY PRESSING THE BUTTON
+	doorButton.setPressedState(LOW);
 }
 
 void loop() {
+	doorButton.update();
+
+	if (doorButton.pressed()) {
+		ledState = !ledState; // SET ledState TO THE OPPOSITE OF ledState
+		digitalWrite(DOOR_LED_PIN, ledState); // WRITE THE NEW ledState
+
+
+		doorOpen = !doorOpen;
+
+		if (doorOpen) {
+			doorTarget = ESPUI.getControl(servoOpenInput)->value.toInt();
+		} else {
+			doorTarget = ESPUI.getControl(servoClosedInput)->value.toInt();
+		}
+
+		doorServo.write(doorTarget);
+	}
+
 	static long unsigned lastTime = 0;
 	if (lastTime == 0) {
 		lastTime = micros();
