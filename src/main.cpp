@@ -1,12 +1,17 @@
 #include <Arduino.h>
+#include <Bounce2.h>
 #include <EEPROM.h>
+#include <ESP32Servo.h>
 #include <ESPUI.h>
 #include <ESPmDNS.h>
 #include <FastAccelStepper.h>
+#include <SPI.h>
 #include <TMCStepper.h>
+#include <U8g2lib.h>
 #include <WiFi.h>
-#include <ESP32Servo.h>
-#include <Bounce2.h>
+
+#include "./assets/c-base-logo.h"
+#include "./assets/c-base-shape.h"
 
 // Settings
 // #define SLOW_BOOT 0
@@ -29,7 +34,7 @@ TMC2209Stepper driver(&SERIAL_PORT, R_SENSE, DRIVER_ADDRESS);
 FastAccelStepperEngine engine = FastAccelStepperEngine();
 FastAccelStepper *stepper = NULL;
 
-#define SERVO_PIN 26
+#define SERVO_PIN 15
 
 Servo doorServo;
 
@@ -44,6 +49,25 @@ Servo doorServo;
 #define DOOR_BUTTON_PIN 4
 
 Bounce2::Button doorButton = Bounce2::Button();
+
+// pins 25 33 32 35 34
+
+#define LED_COPI_PIN 26
+#define LED_SCK_PIN 25
+#define LED_CS_PIN 33
+#define LED_DC_PIN 32
+#define LED_RESET_PIN 21
+
+// software SPI (slow)
+// mode 1 -- small buffer to allow non-blocking drawing (others: 2/F)
+U8G2_SSD1322_NHD_256X64_1_4W_SW_SPI u8g2(
+	U8G2_R0,
+	/* sck */ LED_SCK_PIN,
+	/* data */ LED_COPI_PIN,
+	/* cs */ LED_CS_PIN,
+	/* dc */ LED_DC_PIN,
+	/* reset */ LED_RESET_PIN
+);
 
 // Function Prototypes
 void connectWifi();
@@ -107,20 +131,15 @@ void setUpUI() {
 		}
 	);
 
-	stopButton = ESPUI.addControl(
-		ControlType::Button,
-		"",
-		"Stop",
-		ControlColor::None,
-		backButton,
-		[](Control *sender, int type) {
-			if (type == B_DOWN) {
-				Serial.println("stop pressed");
+	stopButton =
+		ESPUI
+			.addControl(ControlType::Button, "", "Stop", ControlColor::None, backButton, [](Control *sender, int type) {
+				if (type == B_DOWN) {
+					Serial.println("stop pressed");
 
-				targetSpeedSps = 0;
-			}
-		}
-	);
+					targetSpeedSps = 0;
+				}
+			});
 
 	forwardButton = ESPUI.addControl(
 		ControlType::Button,
@@ -217,6 +236,122 @@ void generalCallback(Control *sender, int type) {
 	Serial.println(sender->value);
 }
 
+//============================================
+// LCD drawing
+//============================================
+
+// 40MHz, taken from here, but i don't know if it applies to hardware SPI
+// https://docs.espressif.com/projects/esp-idf/en/release-v5.2/esp32/api-reference/peripherals/spi_master.html#gpio-matrix-and-io-mux
+long SPI_CLOCK_SPEED_HZ = 40 * 1000 * 1000;
+
+void setupLCD() {
+	// TODO: maybe this can improve the speed? try different values
+	// u8g2.setBusClock(SPI_CLOCK_SPEED_HZ);
+	u8g2.begin();
+}
+
+template<typename T>
+struct IncrementalDraw {
+	bool inProgress;
+	unsigned long frameStartTime;
+
+	T arg;
+	void (*drawCallback)(unsigned long time, T *arg);
+
+	IncrementalDraw(void (*drawCallback)(unsigned long time, T *arg)) {
+		this->drawCallback = drawCallback;
+		this->inProgress = false;
+		this->frameStartTime = 0;
+	}
+
+	unsigned int drawForDuration(unsigned long maxDuration, T *arg) {
+		if (!this->inProgress) {
+			this->inProgress = true;
+			this->frameStartTime = millis();
+			this->arg = *arg;
+			u8g2.firstPage();
+		}
+		auto start = millis();
+		auto end = -1;
+
+		while (true) {
+			this->drawCallback(this->frameStartTime, &this->arg);
+
+			// blocks for ~50ms
+			auto stillDrawing = u8g2.nextPage();
+			end = millis();
+			auto duration = end - start;
+
+			// Serial.print("drew ");
+			// Serial.print(this->arg);
+			// Serial.print(" ");
+			// Serial.print(stillDrawing ? "not done yet" : "done");
+			// Serial.println();
+
+			if (!stillDrawing) {
+				// we're done frawing this frame
+				this->inProgress = false;
+				break;
+			}
+			if (duration >= maxDuration) {
+				// we're not done drawing the frame, but we exceeded maxDuration, so it's time to yield
+				break;
+			}
+		}
+		return end - start;
+	}
+};
+
+void drawSetup(void) {
+	u8g2.setFont(u8g2_font_6x10_tf);
+	u8g2.setFontRefHeightExtendedText();
+	u8g2.setDrawColor(1);
+	u8g2.setFontPosTop();
+	u8g2.setFontDirection(0);
+}
+
+typedef long long DrawArg;
+
+int sequenceDurationMs = 1000;
+
+double square(double x) {
+	return x * x;
+}
+
+void draw(unsigned long time, DrawArg *rawSpeed) {
+	drawSetup();
+
+	// auto seqTime = time / 10;
+	// double loopPercent = (double)(seqTime % loopDurationMs) / (double)loopDurationMs;
+	// double speed = 100 * square(sin(loopPercent * PI));
+
+	// double speed = *rawSpeed;
+	// char speedStr[64];
+	// snprintf(speedStr, (sizeof speedStr), "%05.2f", speed);
+
+	auto speed = *rawSpeed;
+	char speedStr[64];
+	snprintf(speedStr, (sizeof speedStr), "%4lld", speed);
+	// std::string speedStr = std::format("{:.2} mm/s", speed);
+	// std::string speedStr = std::to_string(speed) + " mm/s";
+
+	u8g2.drawXBMP(2, 2, c_base_shape.width, c_base_shape.height, c_base_shape.data);
+	u8g2.setFont(u8g2_font_6x10_mf);
+	u8g2.drawStr(c_base_shape.width + 2 + 16, 8, "Monorail speed");
+
+	u8g2.setFont(u8g2_font_inb24_mn);
+	u8g2.drawStr(c_base_shape.width + 2 + 16, 20, speedStr);
+
+	u8g2.setFont(u8g2_font_12x6LED_tf);
+	u8g2.drawStr(3 * 64 - 16, 64 - 30, "steps/s");
+}
+
+auto incrementalDraw = new IncrementalDraw<DrawArg>(&draw);
+
+//============================================
+// Setup + loop
+//============================================
+
 int ledState = LOW;
 
 void setup() {
@@ -231,6 +366,7 @@ void setup() {
 	WiFi.setSleep(false); // For the ESP32: turn off sleeping to increase UI responsivness (at the cost of power use)
 
 	setUpUI();
+	setupLCD();
 
 	// STEPPER
 
@@ -243,7 +379,7 @@ void setup() {
 
 	driver.begin();                // UART: Init SW UART (if selected) with default 115200 baudrate
 	driver.toff(5);                // Enables driver in software
-	driver.rms_current(1500);       // Set motor RMS current
+	driver.rms_current(1500);      // Set motor RMS current
 	driver.microsteps(MICROSTEPS); // Set microstepss
 
 	driver.en_spreadCycle(true);
@@ -272,7 +408,7 @@ void setup() {
 	ESP32PWM::allocateTimer(2);
 	ESP32PWM::allocateTimer(3);
 
-	doorServo.setPeriodHertz(50);    // standard 50 hz servo
+	doorServo.setPeriodHertz(50); // standard 50 hz servo
 	// doorServo.attach(SERVO_PIN, 1000, 2000);
 	doorServo.attach(SERVO_PIN);
 
@@ -294,9 +430,8 @@ void loop() {
 	doorButton.update();
 
 	if (doorButton.pressed()) {
-		ledState = !ledState; // SET ledState TO THE OPPOSITE OF ledState
+		ledState = !ledState;                 // SET ledState TO THE OPPOSITE OF ledState
 		digitalWrite(DOOR_LED_PIN, ledState); // WRITE THE NEW ledState
-
 
 		doorOpen = !doorOpen;
 
@@ -359,6 +494,9 @@ void loop() {
 		stepper->runBackward();
 	}
 
+	unsigned targetLoopDuration = 50;
+	auto drawDuration = incrementalDraw->drawForDuration(targetLoopDuration, &currentSpeed);
+
 	// driver.VACTUAL(currentSpeed);
 
 	// Serial.print("TSTEP: ");
@@ -371,9 +509,11 @@ void loop() {
 	// Serial.print(", Accel: ");
 	// Serial.print(accel);
 	// Serial.print(", Delta: ");
-	// Serial.println(delta);
+	Serial.println(drawDuration);
 
-	delay(50);
+	if (drawDuration < targetLoopDuration) {
+		delay(targetLoopDuration - drawDuration);
+	}
 }
 
 void readStringFromEEPROM(String &buf, int baseaddress, int size) {
