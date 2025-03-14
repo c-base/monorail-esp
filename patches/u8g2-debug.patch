@@ -1,0 +1,42 @@
+diff --unified --recursive --new-file .pio/libdeps/esp32dev/U8g2/src/U8x8lib.cpp .pio/libdeps/esp32dev/U8g2/src/U8x8lib.cpp
+--- .pio/libdeps/esp32dev/U8g2/src/U8x8lib.cpp	2025-03-15 00:44:10
++++ .pio/libdeps/esp32dev/U8g2/src/U8x8lib.cpp	2025-02-09 22:58:15
+@@ -938,12 +938,10 @@
+       {
+ 	/* SPI.begin(int8_t sck=SCK, int8_t miso=MISO, int8_t mosi=MOSI, int8_t ss=-1); */
+ 	/* actually MISO is not used, but what else could be used here??? */
+-	Serial.println("SPI.begin(...)");
+ 	SPI.begin(u8x8->pins[U8X8_PIN_SPI_CLOCK], MISO, u8x8->pins[U8X8_PIN_SPI_DATA]);
+       }
+       else
+       {
+-	Serial.println("SPI.begin()");
+ 	SPI.begin();
+       }
+ #else
+@@ -970,8 +968,6 @@
+       }
+       
+ #if ARDUINO >= 10600
+-	  Serial.println("U8X8_MSG_BYTE_START_TRANSFER");
+-	  Serial.println("SPI.beginTransaction");
+       SPI.beginTransaction(SPISettings(u8x8->bus_clock, MSBFIRST, internal_spi_mode));
+ #else
+       SPI.begin();
+@@ -985,12 +981,10 @@
+       SPI.setDataMode(internal_spi_mode);
+       SPI.setBitOrder(MSBFIRST);
+ #endif
+-	  Serial.println("u8x8_gpio_SetCS");
+-	  u8x8_gpio_SetCS(u8x8, u8x8->display_info->chip_enable_level);
+-	  Serial.println("gpio_and_delay_cb");
+-	  u8x8->gpio_and_delay_cb(u8x8, U8X8_MSG_DELAY_NANO, u8x8->display_info->post_chip_enable_wait_ns, NULL);
+-	  Serial.println("U8X8_MSG_BYTE_START_TRANSFER - done");
+-	  break;
++      
++      u8x8_gpio_SetCS(u8x8, u8x8->display_info->chip_enable_level);  
++      u8x8->gpio_and_delay_cb(u8x8, U8X8_MSG_DELAY_NANO, u8x8->display_info->post_chip_enable_wait_ns, NULL);
++      break;
+       
+     case U8X8_MSG_BYTE_END_TRANSFER:      
+       u8x8->gpio_and_delay_cb(u8x8, U8X8_MSG_DELAY_NANO, u8x8->display_info->pre_chip_disable_wait_ns, NULL);

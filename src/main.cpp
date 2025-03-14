@@ -1,3 +1,16 @@
+// #define USE_SOFTWARE_SPI
+
+#ifndef USE_SOFTWARE_SPI
+	// #define HSPI_INTERFACE HSPI
+	#define HSPI_INTERFACE VSPI
+
+	// HACK: fixes SPI.beginTransaction() hangs=ing on SPI_PARAM_LOCK()
+    // even though nothing else should be acquiring the lock beforehand.
+    // we don't have any concurrent code here so it should be fine
+    // TODO: double check if something in the u8g2 constructor is getting the lock before serial is up?
+	#define CONFIG_DISABLE_HAL_LOCKS 1
+#endif
+
 #include <Arduino.h>
 #include <Bounce2.h>
 #include <EEPROM.h>
@@ -50,13 +63,14 @@ Servo doorServo;
 
 Bounce2::Button doorButton = Bounce2::Button();
 
-// pins 25 33 32 35 34
-
-#define LED_COPI_PIN 26
-#define LED_SCK_PIN 25
-#define LED_CS_PIN 33
 #define LED_DC_PIN 32
 #define LED_RESET_PIN 21
+
+#ifdef USE_SOFTWARE_SPI
+
+	#define LED_COPI_PIN 26
+	#define LED_SCK_PIN 25
+	#define LED_CS_PIN 33
 
 // software SPI (slow)
 // mode 1 -- small buffer to allow non-blocking drawing (others: 2/F)
@@ -68,6 +82,32 @@ U8G2_SSD1322_NHD_256X64_1_4W_SW_SPI u8g2(
 	/* dc */ LED_DC_PIN,
 	/* reset */ LED_RESET_PIN
 );
+#else
+	#if HSPI_INTERFACE == HSPI
+	// builtin pins for hardware SPI #1
+	// https://www.teachmemicro.com/esp32-pinout-diagram-wroom-32/
+	// #define LED_CIPO_PIN 12 // unused
+		#define LED_COPI_PIN 13 // "SDIN"
+		#define LED_SCK_PIN 14
+		#define LED_CS_PIN 15
+	#elif HSPI_INTERFACE == VSPI
+		// builtin pins for hardware SPI #2 (VSPI)
+	    // #define LED_CIPO_PIN 19 // unused
+		#define LED_COPI_PIN 23 // "SDIN"
+		#define LED_SCK_PIN 18
+		#define LED_CS_PIN 5
+	#endif
+
+// Hardware SPI
+U8G2_SSD1322_NHD_256X64_F_4W_HW_SPI
+
+u8g2(
+	U8G2_R0,
+	/* cs */ LED_CS_PIN,
+	/* dc */ LED_DC_PIN,
+	/* reset */ LED_RESET_PIN
+);
+#endif
 
 // Function Prototypes
 void connectWifi();
@@ -245,9 +285,16 @@ void generalCallback(Control *sender, int type) {
 long SPI_CLOCK_SPEED_HZ = 40 * 1000 * 1000;
 
 void setupLCD() {
+#ifndef USE_SOFTWARE_SPI
+	// https://github.com/olikraus/u8g2/blob/2b75f932b5ef4b4de8edf73e1a690702a35b1976/doc/faq.txt#L35-L36
+	SPI = SPIClass(HSPI_INTERFACE);
+#endif
+
 	// TODO: maybe this can improve the speed? try different values
 	// u8g2.setBusClock(SPI_CLOCK_SPEED_HZ);
+	Serial.println("u8g2.begin()");
 	u8g2.begin();
+	Serial.println("u8g2.begin() done");
 }
 
 template<typename T>
@@ -318,22 +365,24 @@ double square(double x) {
 	return x * x;
 }
 
+bool DRAW_TEST_SPEED = false;
+
 void draw(unsigned long time, DrawArg *rawSpeed) {
 	drawSetup();
 
-	// auto seqTime = time / 10;
-	// double loopPercent = (double)(seqTime % loopDurationMs) / (double)loopDurationMs;
-	// double speed = 100 * square(sin(loopPercent * PI));
-
-	// double speed = *rawSpeed;
-	// char speedStr[64];
-	// snprintf(speedStr, (sizeof speedStr), "%05.2f", speed);
-
-	auto speed = *rawSpeed;
 	char speedStr[64];
-	snprintf(speedStr, (sizeof speedStr), "%4lld", speed);
-	// std::string speedStr = std::format("{:.2} mm/s", speed);
-	// std::string speedStr = std::to_string(speed) + " mm/s";
+	if (DRAW_TEST_SPEED) {
+		// changes the speed according to a sine wave, ignoring any input
+		long long loopDurationMs = 2000;
+		auto seqTime = time / 10;
+		double loopPercent = (double)(seqTime % loopDurationMs) / (double)loopDurationMs;
+		double speed = 100 * square(sin(loopPercent * PI));
+
+		snprintf(speedStr, (sizeof speedStr), "%05.2f", speed);
+	} else {
+		auto speed = *rawSpeed;
+		snprintf(speedStr, (sizeof speedStr), "%4lld", speed);
+	}
 
 	u8g2.drawXBMP(2, 2, c_base_shape.width, c_base_shape.height, c_base_shape.data);
 	u8g2.setFont(u8g2_font_6x10_mf);
@@ -495,7 +544,15 @@ void loop() {
 	}
 
 	unsigned targetLoopDuration = 50;
+#ifdef USE_SOFTWARE_SPI
 	auto drawDuration = incrementalDraw->drawForDuration(targetLoopDuration, &currentSpeed);
+#else
+	auto drawStart = micros();
+	u8g2.clearBuffer();
+	draw(millis(), &currentSpeed);
+	u8g2.sendBuffer();
+	auto drawDuration = (micros() - drawStart) / 1000;
+#endif
 
 	// driver.VACTUAL(currentSpeed);
 
@@ -509,11 +566,12 @@ void loop() {
 	// Serial.print(", Accel: ");
 	// Serial.print(accel);
 	// Serial.print(", Delta: ");
+	Serial.print("draw duration: ");
 	Serial.println(drawDuration);
 
-	if (drawDuration < targetLoopDuration) {
-		delay(targetLoopDuration - drawDuration);
-	}
+	// if (drawDuration < targetLoopDuration) {
+	// 	delay(targetLoopDuration - drawDuration);
+	// }
 }
 
 void readStringFromEEPROM(String &buf, int baseaddress, int size) {
