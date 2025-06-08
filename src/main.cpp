@@ -544,12 +544,13 @@ void loop() {
 	}
 
 	unsigned targetLoopDuration = 50;
+	long long displaySpeed = (stepper->getCurrentSpeedInMilliHz() / 1000) / MICROSTEPS;
 #ifdef USE_SOFTWARE_SPI
-	auto drawDuration = incrementalDraw->drawForDuration(targetLoopDuration, &currentSpeed);
+	auto drawDuration = incrementalDraw->drawForDuration(targetLoopDuration, &displaySpeed);
 #else
 	auto drawStart = micros();
 	u8g2.clearBuffer();
-	draw(millis(), &currentSpeed);
+	draw(millis(), &displaySpeed);
 	u8g2.sendBuffer();
 	auto drawDuration = (micros() - drawStart) / 1000;
 #endif
